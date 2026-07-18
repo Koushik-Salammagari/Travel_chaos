@@ -13,6 +13,13 @@ import { TOOL_SCHEMAS, runTool } from "@/lib/tools";
  */
 export async function POST(req: NextRequest) {
   const { query, itineraryState } = await req.json();
+  
+  console.log("[agent] Query:", query);
+  console.log("[agent] Itinerary state:", itineraryState ? "Present" : "None");
+  if (itineraryState) {
+    console.log("[agent] Itinerary details:", JSON.stringify(itineraryState, null, 2));
+  }
+  
   const client = new Anthropic();
 
   // Give Claude the current itinerary state so it can reason about "our flight"

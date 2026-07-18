@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState, useMemo } from "react";
+import { Plane, Upload, Mic, MicOff, MapPin, Clock, Users, AlertCircle, CheckCircle, XCircle, RefreshCw } from "lucide-react";
 import {
   VocalBridgeProvider,
   useAIAgent,
@@ -82,8 +83,11 @@ type UiAction =
   | { action: "show_call_transcript"; payload: { transcript: { role: string; text: string }[] } };
 
 function uiReducer(state: UiState, action: UiAction): UiState {
+  console.log("[uiReducer] Action:", action.action, "Payload:", action.payload);
+  
   switch (action.action) {
     case "load_itinerary":
+      console.log("[uiReducer] Loading itinerary into state");
       return { ...state, trip: action.payload };
     case "replace_segment": {
       if (!state.trip) return state;
@@ -145,28 +149,53 @@ function TripSherpaShell() {
   const uiRef = useRef(ui);
   useEffect(() => { uiRef.current = ui; }, [ui]);
 
-  // The one hook that turns Claude into a voice agent. Vocal Bridge captures
-  // the user's speech, transcribes it, and hands us the text via onQuery.
-  // Whatever we return is spoken back out loud.
-  useAIAgent({
-    onQuery: async (query: string) => {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, itineraryState: uiRef.current.trip }),
-      });
-      const { text, uiUpdates } = await res.json();
-      (uiUpdates ?? []).forEach((u: UiAction) => dispatch(u));
-      return text || "One moment.";
-    },
-  });
-
-  // Optional: listen for actions the agent fires directly through the VB data
-  // channel (bypassing our /api/agent route). Not used in the base flow but
-  // available if you want the agent to nudge the UI mid-utterance.
+  // Vocal Bridge AI Agent mode: The agent in the dashboard handles conversation
+  // and calls our tools via agentAction events. We don't need useAIAgent callback.
+  
+  // Listen for tool calls from the Vocal Bridge agent
   useAgentActions({
     onAction: (action: string, payload: Record<string, unknown>) => {
-      dispatch({ action, payload } as unknown as UiAction);
+      console.log("[VB Agent Action]", action, payload);
+      
+      // Handle tool responses
+      switch (action) {
+        case "load_itinerary":
+          dispatch({ action: "load_itinerary", payload: payload as Trip });
+          break;
+        case "show_rebook_options":
+          dispatch({ action: "show_rebook_options", payload: payload as RebookOption[] });
+          break;
+        case "show_voucher":
+          dispatch({ action: "show_voucher", payload: payload as Voucher });
+          break;
+        case "show_airport_service":
+          dispatch({ action: "show_airport_service", payload: payload as AirportInfo });
+          break;
+        case "add_note":
+          dispatch({ action: "add_note", payload: payload as { text: string } });
+          break;
+        case "replace_segment":
+          if (typeof payload.segmentIndex === "number") {
+            dispatch({ 
+              action: "replace_segment", 
+              segmentIndex: payload.segmentIndex,
+              payload: payload.segment as Segment 
+            });
+          }
+          break;
+        case "mark_refunded":
+          if (typeof payload.segmentIndex === "number") {
+            dispatch({ action: "mark_refunded", segmentIndex: payload.segmentIndex });
+          }
+          break;
+        case "mark_confirmed":
+          if (typeof payload.segmentIndex === "number") {
+            dispatch({ action: "mark_confirmed", segmentIndex: payload.segmentIndex });
+          }
+          break;
+        default:
+          console.warn("[VB Agent Action] Unknown action:", action);
+      }
     },
   });
 
@@ -195,12 +224,21 @@ function TripSherpaShell() {
 function Header() {
   return (
     <div>
-      <div className="text-amber tracking-widest text-xs mb-2">TRIP SHERPA</div>
+      <div className="flex items-center gap-3 mb-4">
+        <div className="bg-gradient-to-br from-amber to-amber-2 p-3 rounded-xl shadow-lg">
+          <Plane className="w-6 h-6 text-ink" />
+        </div>
+        <div>
+          <div className="text-amber tracking-widest text-xs font-semibold">TRIP SHERPA</div>
+          <div className="text-paper/50 text-xs">AI Travel Assistant</div>
+        </div>
+      </div>
       <h1 className="font-display text-4xl lg:text-5xl leading-tight">
         A calm hand on your <em className="text-amber not-italic">chaotic day</em>.
       </h1>
-      <p className="text-paper/70 mt-3 max-w-lg">
-        Tap the mic. Tell me what's wrong. I'll handle the paperwork.
+      <p className="text-paper/70 mt-3 max-w-lg flex items-start gap-2">
+        <Mic className="w-5 h-5 text-amber mt-0.5 flex-shrink-0" />
+        <span>Tap the mic. Tell me what's wrong. I'll handle the paperwork.</span>
       </p>
     </div>
   );
@@ -225,9 +263,11 @@ function DropZone({ onLoaded }: { onLoaded: (trip: Trip) => void }) {
         return;
       }
       
+      console.log("[UI] Extracted trip data:", data.extracted);
       setUploading(false);
       onLoaded(data.extracted);
     } catch (err) {
+      console.error("[UI] Upload error:", err);
       alert("Failed to upload document. Please try again.");
       setUploading(false);
     }
@@ -243,15 +283,34 @@ function DropZone({ onLoaded }: { onLoaded: (trip: Trip) => void }) {
         const file = e.dataTransfer.files[0];
         if (file) upload(file);
       }}
-      className={`card-in rounded-2xl border-2 border-dashed p-10 text-center transition-colors
-        ${dragging ? "border-amber bg-ink-2" : "border-line bg-ink-2/40"}`}
+      className={`card-in rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300
+        ${dragging ? "border-amber bg-ink-2 scale-[1.02]" : "border-line bg-ink-2/40 hover:border-amber/50"}`}
     >
-      <div className="text-paper/60 text-sm">Start here</div>
-      <div className="text-2xl font-display mt-2">Drop a boarding pass or ticket</div>
-      <div className="text-paper/50 mt-2">
-        {uploading ? "Reading it..." : "PDF, DOC, DOCX, or photo. I'll pull out your trip in a second."}
+      <div className="flex justify-center mb-4">
+        <div className={`p-4 rounded-full transition-all duration-300 ${
+          uploading ? "bg-amber/20 animate-pulse" : dragging ? "bg-amber/30" : "bg-amber/10"
+        }`}>
+          {uploading ? (
+            <RefreshCw className="w-8 h-8 text-amber animate-spin" />
+          ) : (
+            <Upload className="w-8 h-8 text-amber" />
+          )}
+        </div>
       </div>
-      <label className="inline-block mt-6 px-5 py-2 bg-amber text-ink font-medium rounded-full cursor-pointer">
+      <div className="text-paper/60 text-sm mb-1">Start here</div>
+      <div className="text-2xl font-display mt-2">Drop a boarding pass or ticket</div>
+      <div className="text-paper/50 mt-2 flex items-center justify-center gap-2">
+        {uploading ? (
+          <>
+            <RefreshCw className="w-4 h-4 animate-spin" />
+            <span>Reading it...</span>
+          </>
+        ) : (
+          <span>PDF, DOC, DOCX, or photo. I'll pull out your trip in a second.</span>
+        )}
+      </div>
+      <label className="inline-flex items-center gap-2 mt-6 px-6 py-3 bg-gradient-to-r from-amber to-amber-2 text-ink font-medium rounded-full cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
+        <Upload className="w-4 h-4" />
         Choose a file
         <input
           type="file"

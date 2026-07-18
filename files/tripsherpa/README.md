@@ -40,20 +40,19 @@ Traveler ── voice + camera ──▶ React app
                        Doc drop zone     (upload → /api/extract)
                                   │
                                   ▼
-                   Backend /api/agent  (Claude loop + tools)
+              Vocal Bridge AI Agent (configured in dashboard)
                                   │
              ┌────────────┬───────┴────────┬────────────┐
              ▼            ▼                ▼            ▼
-       Landing.AI      Sabre           PayPal      Airport mocks
-       (extract)    (refund + BFM)    (payouts)    (mock JSON)
+       Landing.AI     /api/tools      /api/tools   /api/tools
+       (extract)    (refund check)  (flight search) (navigation)
                                   │
-                           vb call <airline>   (fallback)
+                    Calls Sabre, PayPal, airport services
 ```
 
-Every external API has a **cached fallback JSON** in `lib/mocks.ts` — if a live call
-fails or the network is slow on demo day, the tool returns the cached response and
-the demo continues. Judges won't know the difference. Ship the fallback path first,
-the live path second.
+**No Claude API needed!** Vocal Bridge's built-in AI agent handles all conversation
+and tool orchestration. You just configure the agent in the Vocal Bridge dashboard
+and provide tool endpoints.
 
 ## Run it
 
@@ -71,15 +70,25 @@ here's my boarding pass" and drop the sample PDF from `sample-docs/`.
 ## Environment variables
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...          # Claude for the reasoning
+# Vocal Bridge (voice layer) - REQUIRED
 VOCAL_BRIDGE_API_KEY=vb_...           # From vocalbridgeai.com dashboard
-VOCAL_BRIDGE_AGENT_ID=...             # Create one agent in the VB dashboard first
+
+# Landing.AI (document extraction) - REQUIRED
 LANDINGAI_API_KEY=...                 # va.landing.ai — get one free
+
+# Sabre (flights + refunds) - Optional (mocked by default)
 SABRE_CLIENT_ID=...                   # developer.sabre.com sandbox
 SABRE_CLIENT_SECRET=...
+
+# PayPal (compensation vouchers) - Optional (mocked by default)
 PAYPAL_CLIENT_ID=...                  # developer.paypal.com sandbox
 PAYPAL_SECRET=...
+
+# Demo safety
+USE_MOCKS=true                        # Use mock data for Sabre/PayPal (safer for demos)
 ```
+
+**Note**: You do NOT need an Anthropic/Claude API key. Vocal Bridge's AI handles all conversation.
 
 ## Day-of execution (~6 hours of hacking)
 
