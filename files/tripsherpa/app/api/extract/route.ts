@@ -3,13 +3,12 @@ import { cachedBoardingPassExtract } from "@/lib/mocks";
 
 /**
  * Handles boarding pass / ticket / hotel confirmation upload.
- * The frontend calls this immediately when the user drops a file, then the
- * agent's next voice turn triggers `extract_travel_document` with the returned
- * documentId (in this simplified version we just return the parsed JSON inline).
- *
- * Live path: multipart POST to Landing.AI ADE
- *   https://api.va.landing.ai/v1/tools/agentic-document-analysis
- * See docs.landing.ai/ade for schema-driven extraction.
+ * 
+ * Integrates with Landing.AI V2 API (two-step: parse → extract)
+ * 1. Parse document to markdown
+ * 2. Extract structured fields using JSON schema
+ * 
+ * API: https://api.ade.landing.ai/v2/parse + /v2/extract
  */
 export async function POST(req: NextRequest) {
   const USE_MOCKS = process.env.USE_MOCKS === "true";
@@ -20,8 +19,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "no_file" }, { status: 400 });
   }
 
+  // Mock path: return canned data immediately
   if (USE_MOCKS || !process.env.LANDINGAI_API_KEY) {
-    // Return canned extraction so the demo works without the network.
+    console.log("[extract] Using mock data (USE_MOCKS=true or no API key)");
     return NextResponse.json({
       documentId: "doc_cached_boarding_pass",
       extracted: cachedBoardingPassExtract,
@@ -29,37 +29,137 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const ladeForm = new FormData();
-    ladeForm.append("pdf", file);   // or "image" if it's a JPG/PNG
+    const apiKey = process.env.LANDINGAI_API_KEY!;
+    const headers = {
+      Authorization: `Basic ${apiKey}`,
+    };
 
-    const res = await fetch(
-      "https://api.va.landing.ai/v1/tools/agentic-document-analysis",
-      {
-        method: "POST",
-        headers: {
-          // Landing.AI uses Basic auth with the key as the username.
-          Authorization: `Basic ${Buffer.from(process.env.LANDINGAI_API_KEY + ":").toString("base64")}`,
+    // Step 1: Parse document to markdown
+    console.log("[extract] Step 1: Parsing document to markdown...");
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const parseForm = new FormData();
+    parseForm.append("document", new Blob([fileBuffer], { type: file.type }), file.name);
+    parseForm.append("model", "dpt-3-pro-latest");
+
+    const parseResponse = await fetch("https://api.ade.landing.ai/v2/parse", {
+      method: "POST",
+      headers,
+      body: parseForm,
+    });
+
+    if (!parseResponse.ok) {
+      const errorText = await parseResponse.text();
+      console.error(`[extract] Parse failed (${parseResponse.status}):`, errorText);
+      throw new Error(`Parse failed: ${parseResponse.status}`);
+    }
+
+    const parseData = await parseResponse.json();
+    const markdown = parseData.markdown;
+    console.log("[extract] Parse successful, markdown length:", markdown?.length || 0);
+
+    // Step 2: Extract structured data using schema
+    console.log("[extract] Step 2: Extracting structured data...");
+    const schema = {
+      type: "object",
+      properties: {
+        passenger: {
+          type: "object",
+          properties: {
+            firstName: { type: "string" },
+            lastName: { type: "string" },
+          },
+          required: ["firstName", "lastName"],
         },
-        body: ladeForm,
-      }
-    );
+        pnr: { type: "string", description: "Booking reference or PNR code" },
+        segments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              flightNumber: { type: "string" },
+              carrier: { type: "string" },
+              from: { type: "string", description: "Departure airport code (3 letters)" },
+              fromName: { type: "string" },
+              to: { type: "string", description: "Arrival airport code (3 letters)" },
+              toName: { type: "string" },
+              departDate: { type: "string", format: "YYYY-MM-DD" },
+              departTime: { type: "string", format: "HH:MM" },
+              arriveTime: { type: "string", format: "HH:MM" },
+              seat: { type: "string" },
+              cabin: { type: "string" },
+              status: { type: "string" },
+            },
+            required: ["flightNumber", "carrier", "from", "to", "departTime", "arriveTime"],
+          },
+        },
+        fareClass: { type: "string" },
+      },
+      required: ["passenger", "segments"],
+    };
 
-    if (!res.ok) throw new Error(`Landing.AI extract failed: ${res.status}`);
-    const raw = await res.json();
-
-    // TODO: transform `raw` (Landing.AI's chunk hierarchy) into the shape the
-    // UI expects — see cachedBoardingPassExtract for the target. On hack day,
-    // do this by defining a Pydantic-like JSON schema and using ADE's
-    // schema-driven extraction endpoint (much cleaner than post-processing).
-    return NextResponse.json({
-      documentId: `doc_${Date.now()}`,
-      extracted: raw,
+    const extractResponse = await fetch("https://api.ade.landing.ai/v2/extract", {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        markdown,
+        schema,
+        model: "extract-latest",
+      }),
     });
+
+    if (!extractResponse.ok) {
+      const errorText = await extractResponse.text();
+      console.error(`[extract] Extract failed (${extractResponse.status}):`, errorText);
+      throw new Error(`Extract failed: ${extractResponse.status}`);
+    }
+
+    const extractData = await extractResponse.json();
+    console.log("[extract] Extract response:", JSON.stringify(extractData, null, 2));
+
+    // Transform to our format
+    const extracted = transformExtractResponse(extractData);
+
+    if (extracted && extracted.segments && extracted.segments.length > 0) {
+      console.log("[extract] Successfully extracted trip data");
+      return NextResponse.json({
+        documentId: `doc_${Date.now()}`,
+        extracted,
+      });
+    } else {
+      console.log("[extract] No segments found in extraction");
+      return NextResponse.json(
+        { error: "Could not extract flight information from this document. Please try a different boarding pass or ticket." },
+        { status: 400 }
+      );
+    }
   } catch (err) {
-    console.error("[extract] falling back:", err);
-    return NextResponse.json({
-      documentId: "doc_cached_boarding_pass",
-      extracted: cachedBoardingPassExtract,
-    });
+    console.error("[extract] Error:", err);
+    return NextResponse.json(
+      { error: "Failed to process document. Please try again or upload a different file." },
+      { status: 500 }
+    );
   }
+}
+
+/**
+ * Transform Landing.AI V2 extract response to our format
+ */
+function transformExtractResponse(data: any): any {
+  if (!data) return null;
+
+  // V2 extract returns data in "extraction" field
+  const extracted = data.extraction || data.data || data;
+
+  console.log("[extract] Extracted data:", JSON.stringify(extracted, null, 2));
+
+  if (extracted.passenger && extracted.segments) {
+    return extracted;
+  }
+
+  // If it's wrapped differently, try to unwrap
+  console.warn("[extract] Could not find passenger/segments in extraction");
+  return null;
 }

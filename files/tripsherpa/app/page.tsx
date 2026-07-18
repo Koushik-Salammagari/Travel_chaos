@@ -215,10 +215,22 @@ function DropZone({ onLoaded }: { onLoaded: (trip: Trip) => void }) {
     setUploading(true);
     const fd = new FormData();
     fd.append("document", file);
-    const res = await fetch("/api/extract", { method: "POST", body: fd });
-    const { extracted } = await res.json();
-    setUploading(false);
-    onLoaded(extracted);
+    try {
+      const res = await fetch("/api/extract", { method: "POST", body: fd });
+      const data = await res.json();
+      
+      if (!res.ok || data.error) {
+        alert(data.error || "Failed to process document. Please try again.");
+        setUploading(false);
+        return;
+      }
+      
+      setUploading(false);
+      onLoaded(data.extracted);
+    } catch (err) {
+      alert("Failed to upload document. Please try again.");
+      setUploading(false);
+    }
   };
 
   return (
@@ -237,14 +249,14 @@ function DropZone({ onLoaded }: { onLoaded: (trip: Trip) => void }) {
       <div className="text-paper/60 text-sm">Start here</div>
       <div className="text-2xl font-display mt-2">Drop a boarding pass or ticket</div>
       <div className="text-paper/50 mt-2">
-        {uploading ? "Reading it..." : "PDF or photo. I'll pull out your trip in a second."}
+        {uploading ? "Reading it..." : "PDF, DOC, DOCX, or photo. I'll pull out your trip in a second."}
       </div>
       <label className="inline-block mt-6 px-5 py-2 bg-amber text-ink font-medium rounded-full cursor-pointer">
         Choose a file
         <input
           type="file"
           className="hidden"
-          accept="application/pdf,image/*"
+          accept="application/pdf,image/*,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/msword,.doc"
           onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
         />
       </label>
